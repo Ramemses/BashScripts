@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+
+# Initialize variables
+DRY_RUN=0
+DELETE_UPGRADE=0
+DELETE_AUTOREMOVE=0
+DELETE_UPDATE=0
+DELETE_AUTOCLEAN=0
+ASSUME_YES=0
+
+SCRIPT_VERSION="1.0.0"
+
+# Function to update package lists
+_update_system_() { 
+    echo "Updating list of packages..."
+    if [[ $DRY_RUN -ne 0 ]]; then
+        echo "DRY RUN: apt-get update -y -q"
+    elif ! apt-get update -y -q; then
+        echo ""; echo "Error updating packages" >&2
+        return 0
+    fi
+    echo ""; echo ""; echo ""
+    return 0
+}
+
+update_system() {
+    if [[ $DELETE_UPDATE -eq 0 ]]; then
+        _update_system_
+        return $?
+    fi
+    return 0
+}
+
+# Function to upgrade packages
+_upgrade_system_() {    
+    echo "Installing updates..."
+    if [[ $DRY_RUN -ne 0 ]]; then
+        apt-get upgrade -y --dry-run 
+    elif ! apt-get upgrade -y -q; then
+        echo ""; echo "Error installing updates" >&2
+        return 1
+    fi
+    echo ""; echo ""; echo ""
+    return 0
+}
+
+upgrade_system() {
+    if [[ $DELETE_UPGRADE -eq 0 ]]; then
+        _upgrade_system_
+        return $?
+    fi 
+    return 0
+}
+
+# Function to clean and remove unnecessary packages
+_auto_clean_and_remove_() {
+    echo "Starting autoremove and autoclean process..."
+    
+    if [[ $DELETE_AUTOREMOVE -eq 0 ]]; then
+        if [[ $DRY_RUN -ne 0 ]]; then
+            apt-get autoremove -y --dry-run 
+        elif ! apt-get autoremove -y -q; then
+            echo ""; echo "Error during autoremove" >&2
+            return 1
+        fi      
+    fi    
+
+    if [[ $DELETE_AUTOCLEAN -eq 0 ]]; then
+        if [[ $DRY_RUN -ne 0 ]]; then
+            apt-get autoclean -y --dry-run 
+        elif ! apt-get autoclean -y -q; then
+            echo ""; echo "Error during autoclean" >&2
+            return 1
+        fi      
+    fi
+    echo ""; echo ""; echo ""        
+    return 0
+}
+
+auto_clean_and_remove() {
+    if [[ $DELETE_AUTOREMOVE -eq 0 || $DELETE_AUTOCLEAN -eq 0 ]]; then
+        _auto_clean_and_remove_
+        return $?
+    fi 
+    return 0
+}
+
+# Function to check if system is Ubuntu
+check_ubuntu() {
+    local string_with_hostname=$(grep "^NAME=" /etc/os-release)
+    local hostname=${string_with_hostname:6:-1}
+    local ubuntuname="Ubuntu"
+    
+    [[ "$hostname" == "$ubuntuname" ]]
+}
+
+# Function to get user confirmation
+check_answer() {
+    echo "Are you sure you want to update the system?"        
+    echo "This will:"
+    echo "  - Update package lists"
+    [[ $DELETE_UPGRADE -eq 0 ]] && echo "  - Upgrade installed packages"
+    [[ $DELETE_AUTOREMOVE -eq 0 ]] && echo "  - Remove unnecessary packages"
+    [[ $DELETE_AUTOCLEAN -eq 0 ]] && echo "  - Clean package cache"
+    echo ""
+
+    local answer=""    
+    read -p "(Y/N. Default = Y): " answer
+    
+    if [ -z "$answer" ]; then
+        answer="Y"
+    fi
+    
+    case "${answer:-Y}" in
+        [Yy]|Yes|yes|YES)
+            return 0
+            ;;
+        [Nn]|No|no|NO)
+            return 2
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Function to check internet connection
+check_internet_connection() {
+    if ! ping -c 1 archive.ubuntu.com &> /dev/null; then
+        echo "No internet connection or repository unavailable" >&2
+        return 1
+    fi
+    return 0
+}    
+
+# Function to check if reboot is required
+check_reboot_required() {
+    if [[ -f /var/run/reboot-required ]]; then
+        echo "System reboot is required to complete updates!"
+        echo "Please reboot your system when possible."
+    fi
+}
+
+# Function to show help
+show_help() {
+    cat << EOF
+Usage: $0 [OPTIONS]
+
+System update script for Ubuntu
+
+Important: Combined options (like -udr) are NOT supported.
+           Each option must be specified separately.
+
+Options:
+  -h, --help          Show this help message and exit
+  -v, --version       Show version information and exit
+  -n, --dry-run       Simulate the update process without making any changes
+  -d, --no-update     Skip updating package lists
+  -u, --no-upgrade    Skip upgrading packages
+  -r, --no-autoremove Skip autoremove of unnecessary packages
+  -c, --no-autoclean  Skip autoclean of package cache
+  -y, --yes           Assume yes to all prompts
+
+Examples:
+  $0 -y              # Run non-interactively
+  $0 -n              # Dry-run simulation
+  $0 -d -u -r -c     # Skip all steps (just show what would be done)
+  # NOT SUPPORTED: $0 -durc    # Combined options won't work
+EOF
+}
+
+# Function to parse command line arguments
+parse_arguments() {
+    # Check for combined options first
+    for arg in "$@"; do
+        if [[ "$arg" =~ ^-[a-zA-Z]{2,} ]]; then
+            echo "Error: Combined options (like '$arg') are not supported." >&2
+            echo "       Please specify each option separately." >&2
+            exit 1
+        fi
+    done
+    
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -v|--version)
+                echo "Version: $SCRIPT_VERSION"
+                exit 0
+                ;;
+            -n|--dry-run)
+                DRY_RUN=1
+                shift
+                ;;
+            -d|--no-update)
+                DELETE_UPDATE=1
+                shift
+                ;;
+            -u|--no-upgrade)
+                DELETE_UPGRADE=1
+                shift
+                ;;
+            -r|--no-autoremove)
+                DELETE_AUTOREMOVE=1
+                shift
+                ;;
+            -c|--no-autoclean)
+                DELETE_AUTOCLEAN=1
+                shift
+                ;;
+            -y|--yes)
+                ASSUME_YES=1
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                echo "Unexpected argument: $1" >&2
+                exit 1
+                ;;
+        esac
+    done
+}
+
+# Main function
+main() {
+    if [[ $EUID -ne 0 ]]; then
+        echo "This script needs superuser privilege" >&2
+        exit 1
+    fi
+
+    set -e
+    set -o pipefail
+
+    parse_arguments "$@"
+
+    if check_ubuntu; then
+        # Check internet connection early
+        if ! check_internet_connection; then
+            exit 1
+        fi
+        
+        local result=0
+        if [[ $ASSUME_YES -eq 0 ]]; then
+            check_answer
+            result=$?
+        fi
+        
+        if [ $result -eq 0 ]; then
+            update_system || exit 1
+            upgrade_system || exit 1
+            auto_clean_and_remove || exit 1
+
+            echo "Updating successfully finished!"
+            check_reboot_required
+            exit 0
+        elif [ $result -eq 2 ]; then
+            echo "Update cancelled..."
+            exit 0
+        else
+            echo "Incorrect input. Please answer Y or N." >&2
+            exit 1
+        fi
+    else
+        echo "Unsupported system. This script only works with Ubuntu." >&2
+        exit 1
+    fi
+}
+
+# Execute main function with all arguments
+main "$@"
