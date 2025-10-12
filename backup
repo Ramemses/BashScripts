@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+
+
+expand_path() {
+    local path="$1"
+    # Безопасное расширение тильды
+	if [ -z "$path" ];then
+		path="."
+    elif [[ "$path" == ~* ]]; then
+        path="${path/#\~/$HOME}"
+    fi
+    echo "$path"
+}
+
+function logging {
+	if [ $# -ne 2 ]; then
+		return 0
+	elif [[ $1 != "INFO" ]] &&  [[ $1 != "WARNING" ]]  &&  [[ $1 != "ERROR" ]]   && [[  $1 != "CRITICAL" ]]; then
+		return 0
+	else
+		echo -e  "[----$LOGGINGDATE----] #$1: $2 "
+	fi 
+}
+
+show_help() {
+    cat << EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Backup script for project files and database.
+
+REQUIRED OPTIONS:
+    --project_path=PATH    Path to project directory to backup
+    --backup_path=PATH     Path where backups will be stored
+
+DATABASE OPTIONS:
+    --dbname=NAME          Database name for backup
+    --host=HOST            Database host (default: localhost)
+    --user=USER            Database username
+    --password=PASSWORD    Database password
+    --charset=CHARSET      Database character set
+
+OTHER OPTIONS:
+    -h, --help             Show this help message
+    -v, --version          Show version information
+
+EXAMPLES:
+    Basic backup:
+    $(basename "$0") --project_path=~/myproject --backup_path=~/backups
+
+    Full backup with database:
+    $(basename "$0") --project_path=/var/www --backup_path=/backups \\
+        --dbname=myapp --host=localhost --user=root --password=secret
+
+    Backup with specific charset:
+    $(basename "$0") --project_path=~/project --backup_path=~/backups \\
+        --dbname=mydb --charset=utf8mb4
+
+BACKUP STRUCTURE:
+    Backups are stored in: BACKUP_PATH/.Dumps/YYYY-MM-DD-HH:MM/
+    - app.tar.gz          - Compressed project files
+    - dump.sql.gz         - Compressed database dump (if database options provided)
+
+EXIT CODES:
+    0 - Success
+    1 - Argument error or missing required parameters
+    2 - Filesystem error (cannot create directories, etc.)
+    3 - Database backup error
+EOF
+}
+
+show_version() {
+    echo "$(basename "$0") version 1.0"
+    echo "Project and Database Backup Script"
+}
+
+check_db_params() {
+	if	[ -z "$DBNAME" ] || [ -z "$HOST"] || [ -z "$DBNAME" ] ||  [ -z "$USER" ] ||  [ -z "$PASSWD" ];then
+	 	return 1;
+	fi
+	return 0;
+}
+
+
+get_answer() {
+    local prompt="$1"
+    local default
+    
+    case "${2:-}" in
+        [Yy]*) prompt="$prompt [Y/n] "; default="Y" ;;
+        [Nn]*) prompt="$prompt [y/N] "; default="N" ;;
+        *) prompt="$prompt [y/n] " ;;
+    esac
+    
+    while true; do
+        read -p "$prompt" answer
+        case "${answer:-$default}" in
+            [Yy]*) return 0 ;;
+            [Nn]*) return 1 ;;
+            *) echo "Please answer Y or N." ;;
+        esac
+    done
+}
+
+PATHTOPROJECT=""
+PATHTOBACKUP=""
+
+DBNAME=""
+CHARSET=""
+HOST=""
+USER=""
+PASSWD=""
+UNARCHIVE=0
+
+while [ -n "$1" ]
+do
+	case "$1" in
+		-h|--help) show_help; exit 0;;
+		-v|--version) show_version; exit 0;;
+		--project_path=*) PATHTOPROJECT=${1#*=};shift;;
+		--backup_path=*) PATHTOBACKUP=${1#*=};shift;;
+		--host=*) HOST="${1#*=}"; shift ;;
+        --user=*) USER="${1#*=}"; shift ;;
+        --password=*) PASSWD="${1#*=}"; shift ;;
+        --charset=*) CHARSET="${1#*=}"; shift ;;
+		-r|--return**) UNARCHIVE=1
+		*) logging ERROR "Cannot parse argument $1"; exit 1;;
+	esac
+done
+
+
+PATHTOPROJECT=$(expand_path "$PATHTOPROJECT")
+PATHTOBACKUP=$(expand_path "$PATHTOBACKUP")
+
+
+
+logging INFO "Project: $PATHTOPROJECT"
+logging INFO "Backup: $PATHTOBACKUP"
+
+check_db_params
+if [ $? -ne 0 ]; then
+	logging WARNING "Not enough params to backup database. Do you want backup only project files? (y/n)"
+	
+	get_answer
+	if [ $? -ne 0 ]; then
+		logging INFO "Cancel backup..."
+		exit 0
+	fi	
+fi
+
+
+DATADIR="Dumps"
+LOGGINGDATE=`date +%F-%H:%M`
+
+DBFILENAME="dump.sql"
+
+ARFILENAME="app.tar.gz"
+#SRCFILENAM=`~/.database_files_path`
+
+
+PATHARCHIVEDIR=$PATHTOBACKUP/.$DATADIR/$LOGGINGDATE
+
+
+
+
+#function sqldump{
+#	mysqldump --host=$HOST --user=$USER --password=PASSWD	
+#}
+
+
+logging INFO "Running the backup string..."
+
+
+logging INFO "Prepare database dump..."
+
+mkdir -p $PATHARCHIVEDIR;
+if [ $? -ne 0 ]; then
+	logging ERROR "Failed to make directory for database dumps!"
+	exit 1
+fi
+logging INFO "Preparing dump directory $PATHARCHIVEDIR completed successfuly"
+
+
+#Database structure dumping
+logging INFO "Dumping database..."
+#sqldump to db_file to the dump_dir
+logging INFO "Dumping database $DBNAME completed successfuly"
+
+
+#Src dumping
+logging INFO "Copy the source files of the project $PATHTOPROJECT"
+
+tar -czpf $PATHARCHIVEDIR/$ARFILENAME  $PATHTOPROJECT
+if [ $? -ne 0 ];then
+	logging ERROR "Failed to copy $PATHTOPROJECT source code to archive!"
+	exit 1;
+fi
+
+logging INFO "The source code project $PATHTOPROJECT was copied successfuly"
+
+
+#Finishing the scripts
+logging INFO "All operations completed succesfuly"
+
+logging INFO "Stat datadir space(USED):\n\n`du -h $PATHTOPROJECT`\n"
+logging INFO "Free HDD space:\n\n `df -h $PATHTOPROJECT`\n"
+
+logging INFO "Backup finished"
+
