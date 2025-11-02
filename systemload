@@ -1,0 +1,362 @@
+#! /usr/bin/env bash
+
+
+#FLAGS
+CPU=0
+STREAMS=0
+TERMINAL=0
+
+MEMORY=0
+REALTIME=0
+PAGING=0
+
+
+# CPU PARAMETRES
+STREAMS_COUNT=$( nproc )
+IDLE_POSITION=4
+IOWAIT_POSITION=5
+CPU_PARAMS_COUNT=10
+
+
+# Script version
+VERSION="1.0.0"
+
+
+show_help() {
+	cat << EOF
+Usage: systemload [OPTIONS]
+
+Script for system load/info presented in human readable view
+
+Important: Combined options (like -udr) are NOT supported.
+           Each option must be specified separately.
+
+Options:
+  -h, --help       Show this help message and exit
+  -v, --version    Show version information and exit
+  -r, --realtime   Show information about system in realtime
+  -s, --streams    Shows information about each cpu stream
+  -c, --cpu        Shows detailed information about cpu loading
+  -m, --memory     Shows detailed information about memory 
+
+EOF
+
+}
+
+
+
+
+show_version() {
+    echo "<$(basename "$0")> version: $VERSION"
+}
+
+parse_arguments() {
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+			-h|--help)
+				show_help
+				exit 0
+				;;
+			-v|--version)
+				show_version
+				exit 0
+				;;
+			-s|--streams)
+				STREAMS=1;
+				shift
+				;;
+			-c|--cpu)
+				CPU=1
+				shift
+				;;
+			-r|--realtime)
+			    REALTIME=1	
+				shift
+				;;
+			-p|--paging)
+				PAGING=1
+				shift
+				;;	
+			-m|--memory)
+				MEMORY=1
+				shift
+				;;
+			*)
+		   	    echo "Unexpected argument"
+				exit 1
+				;;
+		esac
+	done
+}
+
+
+terminal_setup(){
+	if [[ $TERMINAL -eq 0 ]]; then
+		stty_save=$(stty -g)	
+		stty -echo -icanon time 0 min 0
+		TERMINAL=1
+	fi
+}
+
+terminal_restore(){
+	if [[ $TERMINAL -eq 1 ]]; then
+		stty $stty_save
+		TERMINAL=0
+
+		echo
+	fi
+}
+
+
+get_cpu_usage(){
+
+	echo ""
+	echo "======= CPU INFO ======="
+	
+	IFS=" " read total_time1 unused_time1 <<< $(awk <<< "$1" '{
+		total_time1 = 0;
+		unused_time1 = $5 + $6;
+	   	for (j=2; j <= NF; j++) {
+     			total_time1 += $j;
+		}
+	   	print total_time1 " " unused_time1;
+	}')
+
+	IFS=" " read total_time2 unused_time2 <<< $(awk <<< "$2" '{
+		total_time2 = 0;
+		unused_time2 = $5 + $6;
+	   	for (j=2; j <= NF; j++) {
+     			total_time2 += $j;
+		}
+	   	print total_time2 " " unused_time2;
+	}')
+
+	total_time=$(( total_time2 - total_time1 ))
+	unused_time=$(( unused_time2 - unused_time1 ))
+	
+	usage_int=$(( ($total_time - $unused_time)*100/$total_time ))
+	usage=$(echo "scale=2; ($total_time - $unused_time)*100.0/$total_time" | bc)
+	if [[ usage_int -lt 1 ]] &&  [[ "$usage" != "0"  ]];then
+		echo "cpu usage: 0$usage" "%" 
+	else
+		echo "cpu usage:" $usage "%"
+	fi
+}
+
+
+get_streams(){
+
+	local time_space=1
+		
+	#FIRST TACT
+	mapfile -t LINES1 < /proc/stat
+	sleep $time_space
+	#SECOND TACT
+	mapfile -t LINES2 < /proc/stat
+
+	
+	if [[ $CPU -eq 1 ]]; then
+		get_cpu_usage "${LINES1[0]}" "${LINES2[0]}"
+	fi
+
+	echo ""
+	echo "======== STREAMS INFO ========"
+	
+	if [[ $STREAMS -eq 1 ]]; then
+		for (( i=1; i <= STREAMS_COUNT; i++ ));do
+	
+			IFS=" " read name total_time1 unused_time1 <<< $(awk <<< "${LINES1[i]}" '{
+				total_time1 = 0;
+				unused_time1 = $5 + $6;
+	   			for (j=2; j <= NF; j++) {
+       				 total_time1 += $j;
+    			}
+	    		print $1 " " total_time1 " " unused_time1;
+			}')	
+	
+			IFS=" " read total_time2 unused_time2 <<< $(awk <<< "${LINES2[i]}" '{
+				total_time2 = 0;
+				unused_time2 = $5 + $6
+		   		for (j=2; j <= NF; j++) {
+    	   			 total_time2 += $j;
+    			}
+    			print total_time2 " " unused_time2;
+			}')	
+	
+			total_time=$(( total_time2 - total_time1 ))
+			unused_time=$(( unused_time2 - unused_time1 ))
+	
+			usage_int=$(( ($total_time - $unused_time)*100/$total_time ))
+			usage=$(echo "scale=2; ($total_time - $unused_time)*100.0/$total_time" | bc)
+			if [[ usage_int -lt 1 ]] &&  [[ "$usage" != "0"  ]];then
+				echo "Usage of $name: 0$usage" "%" 
+			else
+				echo "Usage of $name:" $usage "%"
+			fi
+		done
+	fi
+}
+
+
+get_cpu_temp(){
+	mili_temperature=$(cat /sys/class/thermal/thermal_zone0/temp)
+	temperature=$(echo "scale=2; ($mili_temperature/1000.0)" | bc)
+
+	echo "cpu temperature: $temperature°C"
+}
+
+
+get_memory() {
+    echo ""
+    echo "======== DETAILED MEMORY ========"
+    
+    # Память процессами (из ps)
+    echo "Largest memory processes:"
+    ps aux --sort=-%mem | head -n 6 | awk '
+        NR==1 {printf "%-8s %-8s %s\n", "USER", "MEM%", "COMMAND"}
+        NR>1 {printf "%-8s %-8s %s\n", $1, $4, $11}'
+    
+    # Slab memory (кэш ядра)
+    slab_mem=$(grep Slab /proc/meminfo | awk '{print $2}')
+    echo "Kernel Slab: $((slab_mem / 1024)) MB"
+    
+    # Page tables
+    page_tables=$(grep ^PageTables /proc/meminfo | awk '{print $2}')
+    echo "Page Tables: $((page_tables / 1024)) MB"
+}
+
+convert_memory() {
+    local value=$1
+    local result=0
+    local prefix="Kb"
+
+    if [[ $value -ge $(( 1024 * 1024 * 1024 )) ]]; then
+        result=$(echo "scale=1; $value / (1024 * 1024 * 1024)" | bc)
+        prefix="Tb"
+    elif [[ $value -ge $(( 1024 * 1024 )) ]]; then
+        result=$(echo "scale=1; $value / (1024 * 1024)" | bc)
+        prefix="Gb"
+    elif [[ $value -ge 1024 ]]; then
+        result=$(echo "scale=1; $value / 1024" | bc)
+        prefix="Mb"
+    else
+        result=$value
+        prefix="Kb"
+    fi
+
+    echo "${result}${prefix}"
+}
+
+get_ram(){
+	echo""
+	echo "======= RAM INFO ======="
+	
+	read mem_total mem_free mem_available <<< $(awk '
+        /MemTotal:/ {total=$2}
+        /MemFree:/ {free=$2} 
+        /MemAvailable:/ {avail=$2}
+        END {print total, free, avail}
+    ' /proc/meminfo)	
+
+	total_memory=$(convert_memory $mem_total)
+	free_memory=$(convert_memory $mem_free)
+	available_memory=$(convert_memory $mem_available)
+
+	
+	echo "Total memory : $total_memory"
+	echo "Free memory : $free_memory"
+	echo "Available memory : $available_memory"
+
+	if [[ $MEMORY -eq 0 ]]; then
+		return 0;
+	fi
+
+}
+
+#get_memory(){
+#	
+#}
+
+
+get_loadavg(){
+	echo ""	
+	echo "======= AVARAGE LOADING INFO ======="
+
+	LINE=`head -n 1 /proc/loadavg`
+	
+    IFS=" " read minute_1 minute_5 minute_15 _ _ <<< "$LINE"
+		
+	avg_1=$(echo "scale=2; ($minute_1*100.0/$STREAMS_COUNT)" | bc)
+	avg_5=$(echo "scale=2; ($minute_5*100.0/$STREAMS_COUNT)" | bc)
+	avg_15=$(echo "scale=2; ($minute_15*100.0/$STREAMS_COUNT)" | bc)
+	
+	echo "Avarage load last minute: $avg_1%"
+	echo "Avarage load last 5 minutes: $avg_5%"
+	echo "Avarage load last 15 minutes: $avg_15%"
+}
+
+
+get_overview() {
+
+	echo ""
+   	echo "======= SYSTEM OVERVIEW ======="
+    
+    echo "Hostname: $(hostname)"
+    echo "Uptime: $(uptime -p)"
+    echo "OS: $(source /etc/os-release && echo $PRETTY_NAME)"
+
+}
+
+get_basic_info(){	
+	get_overview
+	get_cpu_info
+	get_loadavg
+	get_ram
+}
+
+
+get_memory_info(){
+	get_memory
+	get_ram
+}
+
+
+get_cpu_info(){
+	if [[ $STREAMS -eq 1 ]]; then	
+		get_streams
+	else
+		local time_space=1
+		
+		LINE1=$(head -n 1 /proc/stat)
+   		sleep $time_space
+		LINE2=$(head -n 1 /proc/stat)
+		
+		get_cpu_usage "$LINE1" "$LINE2"
+	fi
+	if [[ $CPU -eq 1 ]]; then	
+		get_cpu_temp	
+	fi
+}
+
+
+main() {
+
+	parse_arguments "$@"
+	
+	echo -e "\033[36mStarting script...\033[37m"
+	
+	if [[ $CPU -eq 0 && $MEMORY -eq 0 && $STREAMS -eq 0 ]]; then
+		get_basic_info
+	fi
+
+	if [[ $CPU -eq 1 || $STREAMS -eq 1 ]];then
+		get_cpu_info
+	fi
+
+	if [[ $MEMORY -eq 1 ]];then
+		get_memory_info
+	fi
+}
+
+
+main "$@"
