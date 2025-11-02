@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
 
+VERSION=1.0.1
+
 expand_path() {
     local path="$1"
     # Безопасное расширение тильды
@@ -69,8 +71,7 @@ EOF
 }
 
 show_version() {
-    echo "$(basename "$0") version 1.0"
-    echo "Project and Database Backup Script"
+    echo "<$(basename "$0")> version: $VERSION"
 }
 
 check_db_params() {
@@ -122,7 +123,7 @@ do
         --user=*) USER="${1#*=}"; shift ;;
         --password=*) PASSWD="${1#*=}"; shift ;;
         --charset=*) CHARSET="${1#*=}"; shift ;;
-		-r|--return**) UNARCHIVE=1
+		-r|--return**) UNARCHIVE=1; shift ;;
 		*) logging ERROR "Cannot parse argument $1"; exit 1;;
 	esac
 done
